@@ -1,0 +1,153 @@
+package session_test
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"soulcode/internal/provider"
+	"soulcode/internal/session"
+)
+
+func TestSaveLoad_RoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Remove(sessionFilePath(t, dir)) })
+
+	s := session.New("system prompt")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "world"})
+
+	if err := s.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	s2 := session.New("system prompt")
+	restored, err := s2.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !restored {
+		t.Fatal("Load returned false, expected true")
+	}
+	if s2.Len() != 2 {
+		t.Fatalf("expected 2 messages, got %d", s2.Len())
+	}
+	msgs := s2.Messages()
+	if msgs[1].Content != "hello" {
+		t.Errorf("unexpected first message: %q", msgs[1].Content)
+	}
+	if msgs[2].Content != "world" {
+		t.Errorf("unexpected second message: %q", msgs[2].Content)
+	}
+}
+
+func TestLoad_NonExistent_ReturnsFalse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	s := session.New("")
+	restored, err := s.Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if restored {
+		t.Error("expected restored=false for nonexistent session")
+	}
+	if s.Len() != 0 {
+		t.Errorf("expected 0 messages, got %d", s.Len())
+	}
+}
+
+func TestLoad_CorruptedJSON_ReturnsError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	s := session.New("")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "x"})
+	if err := s.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	sessionFile := sessionFilePath(t, dir)
+	t.Cleanup(func() { _ = os.Remove(sessionFile) })
+
+	if err := os.WriteFile(sessionFile, []byte("not valid json"), 0600); err != nil {
+		t.Fatalf("corrupt: %v", err)
+	}
+
+	s2 := session.New("")
+	_, err := s2.Load(dir)
+	if err == nil {
+		t.Error("expected error for corrupted session file")
+	}
+}
+
+func TestDeleteSaved_RemovesFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Remove(sessionFilePath(t, dir)) })
+
+	s := session.New("")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "x"})
+	if err := s.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	s.DeleteSaved(dir)
+
+	s2 := session.New("")
+	restored, err := s2.Load(dir)
+	if err != nil {
+		t.Fatalf("unexpected error after delete: %v", err)
+	}
+	if restored {
+		t.Error("expected restored=false after DeleteSaved")
+	}
+}
+
+func TestSave_SystemPromptNotPersisted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	s := session.New("secret system prompt")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
+	if err := s.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	sessionFile := sessionFilePath(t, dir)
+	t.Cleanup(func() { _ = os.Remove(sessionFile) })
+
+	data, err := os.ReadFile(sessionFile) //nolint:gosec
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	var saved struct {
+		Messages []provider.Message `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, m := range saved.Messages {
+		if m.Role == provider.RoleSystem {
+			t.Error("system prompt must not be persisted in session file")
+		}
+	}
+}
+
+// sessionFilePath mirrors the internal sessionPath calculation so tests can
+// locate the file to clean up or inspect.
+func sessionFilePath(t *testing.T, workDir string) string {
+	t.Helper()
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(workDir)))[:12]
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	return filepath.Join(home, ".soulcode", "sessions", hash, "latest.json")
+}

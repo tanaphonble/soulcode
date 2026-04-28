@@ -1,0 +1,13 @@
+# binary
+soulcode
+
+# build output
+dist/
+
+# test cache
+*.test
+*.out
+
+# OS
+.DS_Store
+Thumbs.db

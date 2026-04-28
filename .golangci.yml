@@ -1,0 +1,52 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose       # HTTP response body must be closed
+    - errcheck        # check all error returns
+    - gocritic        # opinionated code checks
+    - gosec           # security issues
+    - govet           # go vet
+    - ineffassign     # ineffectual assignments
+    - misspell        # spelling in comments and strings
+    - noctx           # http requests must use context
+    - staticcheck     # static analysis
+    - unconvert       # remove unnecessary type conversions
+    - unused          # unused code
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+    disabled-checks:
+      - commentFormatting
+  gosec:
+    excludes:
+      - G104  # errors unhandled — intentional for best-effort ops (session save, gofmt)
+      - G115  # integer overflow uintptr→int — standard terminal API pattern
+      - G117  # secret field in marshaled struct — intentional for config persistence
+      - G204  # subprocess with variable — intentional (bash tool, git commands)
+      - G301  # directory permissions 0755 — appropriate for user-created project files
+      - G304  # file inclusion via variable — intentional file operations
+      - G306  # file write permissions 0644 — appropriate for user-created project files
+      - G704  # SSRF — URLs are validated at client construction time
+  misspell:
+    locale: US
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+        - gosec
+        - gocritic
+  max-issues-per-linter: 0
+  max-same-issues: 0

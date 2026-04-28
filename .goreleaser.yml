@@ -1,0 +1,97 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: soulcode
+    main: .
+    binary: soulcode
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CONTRIBUTING.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - artifacts: checksum
+    args:
+      - "--batch"
+      - "--local-user={{ .Env.GPG_FINGERPRINT }}"
+      - "--output=${signature}"
+      - "--detach-sign=${artifact}"
+    signature: "${artifact}.sig"
+    if: '{{ envOrDefault "GPG_FINGERPRINT" "" }}'
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: "Features"
+      regexp: "^feat"
+    - title: "Bug fixes"
+      regexp: "^fix"
+    - title: "Performance"
+      regexp: "^perf"
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: tanaphonble
+    name: soulcode
+  draft: false
+  prerelease: auto
+  header: |
+    ## soulcode {{ .Tag }}
+  footer: |
+    **Full changelog**: https://github.com/tanaphonble/soulcode/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# brews:
+#   - name: soulcode
+#     homepage: https://github.com/tanaphonble/soulcode
+#     description: AI coding assistant for the terminal
+#     license: MIT
+#     tap:
+#       owner: tanaphonble
+#       name: homebrew-tap
+#     test: |
+#       system "#{bin}/soulcode", "version"
