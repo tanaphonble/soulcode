@@ -53,35 +53,18 @@ checksum:
   algorithm: sha256
 
 signs:
-  # Sign the checksums file with cosign keyless. Anyone who verifies a single
-  # signature against this file transitively trusts every artefact in the
-  # release.
-  - id: cosign-checksums
-    cmd: cosign
-    signature: "${artifact}.sig"
+  # Sign the checksums file with cosign keyless OIDC.
+  # Verifying any single artefact transitively trusts the rest of the release
+  # because each archive's hash is recorded in checksums.txt.
+  - cmd: cosign
     certificate: "${artifact}.pem"
     args:
       - sign-blob
-      - "--yes"
-      - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
       - "${artifact}"
+      - "--yes"
     artifacts: checksum
-    output: true
-
-  # Also sign each archive directly so users can verify a single binary
-  # without first fetching checksums.txt.
-  - id: cosign-archives
-    cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
-    args:
-      - sign-blob
-      - "--yes"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
-      - "${artifact}"
-    artifacts: archive
     output: true
 
 release:
