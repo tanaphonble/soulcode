@@ -13,7 +13,7 @@ import (
 
 const (
 	bashTimeout = 30 * time.Second
-	maxOutput   = 32 * 1024 // 32 KB
+	maxOutput   = 8 * 1024 // 8 KB — enough for errors; LLM can grep for more
 )
 
 func bashTool() (provider.Tool, executeFn) {

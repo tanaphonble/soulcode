@@ -24,15 +24,44 @@ func (s *Session) Add(m provider.Message) {
 // Messages returns the full message list, prepending the system prompt if set.
 // The returned slice is a copy safe for the caller to hold.
 func (s *Session) Messages() []provider.Message {
-	cap := len(s.messages)
+	c := len(s.messages)
 	if s.system != "" {
-		cap++
+		c++
 	}
-	out := make([]provider.Message, 0, cap)
+	out := make([]provider.Message, 0, c)
 	if s.system != "" {
 		out = append(out, provider.Message{Role: provider.RoleSystem, Content: s.system})
 	}
 	return append(out, s.messages...)
+}
+
+// MessagesForAPI returns the message list with old tool results compressed to
+// save tokens. Tool results beyond the last keepTurns assistant replies are
+// truncated to maxToolLen characters. Recent results are kept intact.
+func (s *Session) MessagesForAPI(maxToolLen, keepTurns int) []provider.Message {
+	msgs := s.Messages()
+
+	// Find index of the keepTurns-th most recent assistant message.
+	cutoff := 0
+	seen := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == provider.RoleAssistant {
+			seen++
+			if seen >= keepTurns {
+				cutoff = i
+				break
+			}
+		}
+	}
+
+	out := make([]provider.Message, len(msgs))
+	copy(out, msgs)
+	for i := 0; i < cutoff; i++ {
+		if out[i].Role == provider.RoleTool && len(out[i].Content) > maxToolLen {
+			out[i].Content = out[i].Content[:maxToolLen] + "…[truncated]"
+		}
+	}
+	return out
 }
 
 // Clear resets the conversation history without touching the system prompt.

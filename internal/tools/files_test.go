@@ -22,8 +22,37 @@ func TestReadFile_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != "hello world" {
-		t.Errorf("expected 'hello world', got %q", out)
+	// Output includes line numbers: "1\thello world\n"
+	if !strings.Contains(out, "hello world") {
+		t.Errorf("expected output to contain 'hello world', got %q", out)
+	}
+	if !strings.HasPrefix(out, "1\t") {
+		t.Errorf("expected output to start with line number, got %q", out)
+	}
+}
+
+func TestReadFile_OffsetLimit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lines.txt")
+	mustWriteFile(t, path, []byte("line1\nline2\nline3\nline4\n"))
+
+	reg := tools.New()
+	out, err := reg.Execute(context.Background(), call("read_file", fmt.Sprintf(`{"path":%q,"offset":2,"limit":2}`, path)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "line2") {
+		t.Errorf("expected line2 in output, got %q", out)
+	}
+	if !strings.Contains(out, "line3") {
+		t.Errorf("expected line3 in output, got %q", out)
+	}
+	if strings.Contains(out, "line1") {
+		t.Errorf("line1 should not be in output, got %q", out)
+	}
+	if strings.Contains(out, "line4") {
+		t.Errorf("line4 should not be in output, got %q", out)
 	}
 }
 

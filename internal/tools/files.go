@@ -7,22 +7,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"soulcode/internal/provider"
 )
 
-const maxFileRead = 100 * 1024 // 100 KB
+const maxFileRead = 40 * 1024 // 40 KB — use offset/limit for larger files
 
 func readFileTool() (provider.Tool, executeFn) {
 	return provider.Tool{
 		Name:        "read_file",
-		Description: "Read the contents of a file at the given path.",
+		Description: "Read a file with line numbers. Use offset and limit to read a specific range of lines.",
 		Schema: schema(`{
 			"type": "object",
 			"properties": {
-				"path": {"type": "string", "description": "File path to read."}
+				"path":   {"type": "string", "description": "File path to read."},
+				"offset": {"type": "integer", "description": "First line to read (1-based). Omit to start from line 1."},
+				"limit":  {"type": "integer", "description": "Maximum number of lines to return. Omit for the whole file."}
 			},
 			"required": ["path"]
 		}`),
@@ -31,7 +34,9 @@ func readFileTool() (provider.Tool, executeFn) {
 
 func runReadFile(_ context.Context, input json.RawMessage) (string, error) {
 	var args struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
@@ -40,11 +45,39 @@ func runReadFile(_ context.Context, input json.RawMessage) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	content := string(data)
-	if len(content) > maxFileRead {
-		content = content[:maxFileRead] + fmt.Sprintf("\n... (truncated, %d bytes total)", len(data))
+
+	lines := strings.Split(string(data), "\n")
+	// Remove trailing empty element from a final newline.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
-	return content, nil
+
+	start := 0
+	if args.Offset > 1 {
+		start = args.Offset - 1
+	}
+	if start >= len(lines) {
+		return fmt.Sprintf("(file has %d lines, offset %d is out of range)", len(lines), args.Offset), nil
+	}
+	end := len(lines)
+	if args.Limit > 0 && start+args.Limit < end {
+		end = start + args.Limit
+	}
+
+	var sb strings.Builder
+	width := len(strconv.Itoa(len(lines)))
+	for i, line := range lines[start:end] {
+		fmt.Fprintf(&sb, "%*d\t%s\n", width, start+i+1, line)
+	}
+	if end < len(lines) {
+		fmt.Fprintf(&sb, "... (%d lines not shown, use offset=%d to continue)\n", len(lines)-end, end+1)
+	}
+
+	result := sb.String()
+	if len(result) > maxFileRead {
+		result = result[:maxFileRead] + "\n... (truncated, file is large — use offset/limit to read specific sections)"
+	}
+	return result, nil
 }
 
 func writeFileTool() (provider.Tool, executeFn) {
@@ -124,7 +157,21 @@ func runEditFile(_ context.Context, input json.RawMessage) (string, error) {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
 	gofmt(args.Path)
-	return fmt.Sprintf("edited %s", args.Path), nil
+	return fmt.Sprintf("edited %s\n%s", args.Path, inlineDiff(args.OldString, args.NewString)), nil
+}
+
+// inlineDiff returns a compact before/after diff for display in tool results.
+func inlineDiff(oldStr, newStr string) string {
+	oldLines := strings.Split(oldStr, "\n")
+	newLines := strings.Split(newStr, "\n")
+	var sb strings.Builder
+	for _, l := range oldLines {
+		fmt.Fprintf(&sb, "- %s\n", l)
+	}
+	for _, l := range newLines {
+		fmt.Fprintf(&sb, "+ %s\n", l)
+	}
+	return sb.String()
 }
 
 // gofmt runs gofmt -w on .go files silently — best effort, errors ignored.

@@ -1,9 +1,7 @@
 package session_test
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,19 +12,19 @@ import (
 
 func TestSaveLoad_RoundTrip(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	t.Cleanup(func() { _ = os.Remove(sessionFilePath(t, dir)) })
+	key := session.AutoKey(t.TempDir())
+	t.Cleanup(func() { _ = os.Remove(sessionFilePath(t, key)) })
 
 	s := session.New("system prompt")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
 	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "world"})
 
-	if err := s.Save(dir); err != nil {
+	if err := s.Save(key); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
 	s2 := session.New("system prompt")
-	restored, err := s2.Load(dir)
+	restored, err := s2.Load(key)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -47,10 +45,10 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 
 func TestLoad_NonExistent_ReturnsFalse(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	key := session.AutoKey(t.TempDir())
 
 	s := session.New("")
-	restored, err := s.Load(dir)
+	restored, err := s.Load(key)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,15 +62,15 @@ func TestLoad_NonExistent_ReturnsFalse(t *testing.T) {
 
 func TestLoad_CorruptedJSON_ReturnsError(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	key := session.AutoKey(t.TempDir())
 
 	s := session.New("")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "x"})
-	if err := s.Save(dir); err != nil {
+	if err := s.Save(key); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	sessionFile := sessionFilePath(t, dir)
+	sessionFile := sessionFilePath(t, key)
 	t.Cleanup(func() { _ = os.Remove(sessionFile) })
 
 	if err := os.WriteFile(sessionFile, []byte("not valid json"), 0600); err != nil {
@@ -80,7 +78,7 @@ func TestLoad_CorruptedJSON_ReturnsError(t *testing.T) {
 	}
 
 	s2 := session.New("")
-	_, err := s2.Load(dir)
+	_, err := s2.Load(key)
 	if err == nil {
 		t.Error("expected error for corrupted session file")
 	}
@@ -88,19 +86,19 @@ func TestLoad_CorruptedJSON_ReturnsError(t *testing.T) {
 
 func TestDeleteSaved_RemovesFile(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	t.Cleanup(func() { _ = os.Remove(sessionFilePath(t, dir)) })
+	key := session.AutoKey(t.TempDir())
+	t.Cleanup(func() { _ = os.Remove(sessionFilePath(t, key)) })
 
 	s := session.New("")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "x"})
-	if err := s.Save(dir); err != nil {
+	if err := s.Save(key); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	s.DeleteSaved(dir)
+	s.DeleteSaved(key)
 
 	s2 := session.New("")
-	restored, err := s2.Load(dir)
+	restored, err := s2.Load(key)
 	if err != nil {
 		t.Fatalf("unexpected error after delete: %v", err)
 	}
@@ -111,15 +109,15 @@ func TestDeleteSaved_RemovesFile(t *testing.T) {
 
 func TestSave_SystemPromptNotPersisted(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	key := session.AutoKey(t.TempDir())
 
 	s := session.New("secret system prompt")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
-	if err := s.Save(dir); err != nil {
+	if err := s.Save(key); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	sessionFile := sessionFilePath(t, dir)
+	sessionFile := sessionFilePath(t, key)
 	t.Cleanup(func() { _ = os.Remove(sessionFile) })
 
 	data, err := os.ReadFile(sessionFile) //nolint:gosec
@@ -140,14 +138,12 @@ func TestSave_SystemPromptNotPersisted(t *testing.T) {
 	}
 }
 
-// sessionFilePath mirrors the internal sessionPath calculation so tests can
-// locate the file to clean up or inspect.
-func sessionFilePath(t *testing.T, workDir string) string {
+// sessionFilePath returns the path for a given session key, mirroring the internal calculation.
+func sessionFilePath(t *testing.T, key string) string {
 	t.Helper()
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(workDir)))[:12]
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	return filepath.Join(home, ".soulcode", "sessions", hash, "latest.json")
+	return filepath.Join(home, ".soulcode", "sessions", key, "latest.json")
 }

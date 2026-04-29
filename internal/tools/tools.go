@@ -26,6 +26,7 @@ type Registry struct {
 // New returns a Registry pre-loaded with all built-in tools.
 func New() *Registry {
 	r := &Registry{tools: map[string]*entry{}}
+	r.register(thinkTool())
 	r.register(bashTool())
 	r.register(readFileTool())
 	r.register(writeFileTool())

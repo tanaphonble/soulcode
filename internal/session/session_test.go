@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"strings"
 	"testing"
 
 	"soulcode/internal/provider"
@@ -91,5 +92,76 @@ func TestLen_ExcludesSystemPrompt(t *testing.T) {
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "x"})
 	if s.Len() != 1 {
 		t.Errorf("expected Len() == 1, got %d", s.Len())
+	}
+}
+
+func addTurn(s *session.Session, userMsg, assistantMsg, toolResult string) {
+	s.Add(provider.Message{Role: provider.RoleUser, Content: userMsg})
+	s.Add(provider.Message{
+		Role:      provider.RoleAssistant,
+		Content:   assistantMsg,
+		ToolCalls: []provider.ToolCall{{ID: "t1", Name: "bash"}},
+	})
+	s.Add(provider.Message{Role: provider.RoleTool, Content: toolResult, ToolCallID: "t1"})
+}
+
+func TestMessagesForAPI_CompressesOldToolResults(t *testing.T) {
+	t.Parallel()
+	s := session.New("sys")
+
+	longOutput := strings.Repeat("x", 2000)
+	addTurn(s, "turn1", "resp1", longOutput)
+	addTurn(s, "turn2", "resp2", longOutput)
+	addTurn(s, "turn3", "resp3", longOutput) // recent — should stay full
+
+	msgs := s.MessagesForAPI(100, 2)
+
+	var toolMsgs []provider.Message
+	for _, m := range msgs {
+		if m.Role == provider.RoleTool {
+			toolMsgs = append(toolMsgs, m)
+		}
+	}
+	if len(toolMsgs) != 3 {
+		t.Fatalf("expected 3 tool messages, got %d", len(toolMsgs))
+	}
+	if len(toolMsgs[0].Content) >= 2000 {
+		t.Errorf("old tool result should be compressed, got len=%d", len(toolMsgs[0].Content))
+	}
+	if !strings.HasSuffix(toolMsgs[0].Content, "…[truncated]") {
+		t.Errorf("expected truncation marker, got %q", toolMsgs[0].Content)
+	}
+	if len(toolMsgs[2].Content) < 2000 {
+		t.Errorf("recent tool result should not be compressed, got len=%d", len(toolMsgs[2].Content))
+	}
+}
+
+func TestMessagesForAPI_ShortResultsUntouched(t *testing.T) {
+	t.Parallel()
+	s := session.New("")
+	addTurn(s, "q", "a", "short output")
+	addTurn(s, "q2", "a2", "also short")
+
+	msgs := s.MessagesForAPI(100, 1)
+	for _, m := range msgs {
+		if m.Role == provider.RoleTool && strings.Contains(m.Content, "truncated") {
+			t.Errorf("short result should not be truncated: %q", m.Content)
+		}
+	}
+}
+
+func TestMessagesForAPI_DoesNotMutateSession(t *testing.T) {
+	t.Parallel()
+	s := session.New("")
+	long := strings.Repeat("y", 2000)
+	addTurn(s, "q", "a", long)
+	addTurn(s, "q2", "a2", "recent")
+
+	_ = s.MessagesForAPI(100, 1)
+
+	for _, m := range s.Messages() {
+		if m.Role == provider.RoleTool && m.Content != "recent" && len(m.Content) < 2000 {
+			t.Error("MessagesForAPI must not mutate original session messages")
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/chzyer/readline"
 
@@ -35,60 +36,55 @@ type SwitchFn func(model string) (provider.Provider, error)
 
 // REPL is an interactive session with an LLM provider.
 type REPL struct {
-	p        provider.Provider
-	switchFn SwitchFn
-	sess     *session.Session
-	tools    *tools.Registry
-	workDir  string
-	restored bool
+	p          provider.Provider
+	switchFn   SwitchFn
+	sess       *session.Session
+	tools      *tools.Registry
+	workDir    string
+	sessionKey string // either "auto-<hash>" or a user-supplied name
+	restored   bool
 }
 
-const systemPrompt = `You are soulcode, an expert software engineering assistant running in the terminal.
+const systemPrompt = `You are soulcode, a world-class terminal-based software engineering assistant.
 
-## Before implementing anything
+## Mandatory rules
 
-For any non-trivial task (new project, new feature, architectural decision), ask clarifying questions FIRST. Do not write a single line of code until you understand:
-- The exact requirements and constraints
-- Tech stack preferences (framework, ORM, etc.)
-- Database schema if relevant
-- Whether tests are required and what kind
+1. **Clarify first** — for non-trivial tasks, ask one short round of questions before writing any code.
+2. **Read before editing** — always read_file before editing. Use grep/glob to understand context.
+3. **Verify every change** — after every write_file or edit_file, run bash (build + tests). Fix all errors before continuing. Never report success while errors exist.
+4. **No placeholders** — write complete, production-ready code. No TODOs, stubs, or truncated output.
+5. **Match the codebase** — use existing patterns, style, naming, and error-handling conventions exactly.
+6. **Handle errors** — never silently discard errors.
+7. **Dependencies** — after adding any: go mod tidy / npm install / pip install.
+8. **Prefer edit_file** over write_file for existing files — smaller diffs, lower risk.
 
-Keep questions short and grouped. One round of questions is enough — then execute completely.
-
-## When implementing
-
-- Write complete, production-ready code. Never write placeholders, stubs, or "// TODO" comments.
-- Always run bash to verify: compile, test, lint. Fix errors before reporting done.
-- After adding any dependency, run go mod tidy (Go), npm install (Node), etc.
-- Always read a file before editing it.
-- Prefer edit_file over write_file for existing files.
-- Write idiomatic code for the language and framework of the project.
-- Never truncate code — write every line.
-
-## Output style
-
-- No lengthy explanations or step-by-step narration. Just do the work.
-- After finishing, give a short summary of what was done and how to run it.
-- If something is ambiguous mid-task, make a reasonable decision and note it briefly.`
+## Output
+No narration. Do the work. End with one short summary of what changed and how to run it.
+Mid-task ambiguity: decide and note it in one sentence.`
 
 // New creates a REPL backed by the given provider.
-// switchFn is called when the user runs /model <name> — it receives the new
-// model name and returns a fresh provider (keeping the same credentials).
-func New(p provider.Provider, switchFn SwitchFn) *REPL {
+// switchFn is called when the user runs /model <name>.
+// sessionName is optional: if non-empty the session is stored/resumed by name
+// instead of being keyed to the working directory.
+func New(p provider.Provider, switchFn SwitchFn, sessionName string) *REPL {
 	proj := sctx.Gather()
 	sess := session.New(proj.SystemPrompt(systemPrompt))
 
-	restored, _ := sess.Load(proj.WorkDir)
-
-	r := &REPL{
-		p:        p,
-		switchFn: switchFn,
-		sess:     sess,
-		tools:    tools.New(),
-		workDir:  proj.WorkDir,
+	key := session.AutoKey(proj.WorkDir)
+	if sessionName != "" {
+		key = sessionName
 	}
-	r.restored = restored
-	return r
+	restored, _ := sess.Load(key)
+
+	return &REPL{
+		p:          p,
+		switchFn:   switchFn,
+		sess:       sess,
+		tools:      tools.New(),
+		workDir:    proj.WorkDir,
+		sessionKey: key,
+		restored:   restored,
+	}
 }
 
 // Run starts the REPL and blocks until the user exits or ctx is cancelled.
@@ -106,13 +102,15 @@ func (r *REPL) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("readline: %w", err)
 	}
-	defer rl.Close() //nolint:errcheck
+	defer func() { _ = rl.Close() }()
 
 	fmt.Printf("%ssoulcode%s  %s%s%s\n", ansiBold, ansiReset, ansiDim, r.p.ID(), ansiReset)
 	fmt.Printf("%sCtrl+C%s interrupts · %sCtrl+D%s exits · %s/help%s for commands\n",
 		ansiBold, ansiReset, ansiBold, ansiReset, ansiBold, ansiReset)
 	if r.restored {
-		fmt.Printf("%sSession restored (%d messages) — /clear to start fresh%s\n", ansiDim, r.sess.Len(), ansiReset)
+		label := r.sessionKey
+		fmt.Printf("%sSession %q restored (%d messages) — /clear to start fresh%s\n",
+			ansiDim, label, r.sess.Len(), ansiReset)
 	}
 	fmt.Println()
 
@@ -164,7 +162,9 @@ func (r *REPL) dispatch(ctx context.Context, line string, sigCh <-chan os.Signal
 		return r.command(ctx, line, sigCh)
 	}
 	r.agentLoop(ctx, line, sigCh)
-	r.sess.Save(r.workDir) //nolint:errcheck,gosec
+	if err := r.sess.Save(r.sessionKey); err != nil {
+		fmt.Fprintf(os.Stderr, "%s[warning: session not saved: %v]%s\n", ansiYellow, err, ansiReset)
+	}
 	return false
 }
 
@@ -177,7 +177,7 @@ func (r *REPL) command(ctx context.Context, line string, sigCh <-chan os.Signal)
 
 	case "/clear":
 		r.sess.Clear()
-		r.sess.DeleteSaved(r.workDir)
+		r.sess.DeleteSaved(r.sessionKey)
 		fmt.Printf("%sConversation cleared.%s\n", ansiDim, ansiReset)
 
 	case "/continue":
@@ -185,6 +185,9 @@ func (r *REPL) command(ctx context.Context, line string, sigCh <-chan os.Signal)
 
 	case "/model":
 		r.handleModel(parts[1:])
+
+	case "/sessions":
+		r.handleSessions()
 
 	case "/help":
 		fmt.Print(helpText)
@@ -218,6 +221,28 @@ func (r *REPL) handleModel(args []string) {
 	fmt.Printf("%sswitched to %s%s%s\n", ansiDim, ansiBold, r.p.ID(), ansiReset)
 }
 
+// handleSessions lists all named sessions.
+func (r *REPL) handleSessions() {
+	sessions, err := session.ListNamed()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%serror listing sessions: %v%s\n", ansiRed, err, ansiReset)
+		return
+	}
+	if len(sessions) == 0 {
+		fmt.Printf("%sNo named sessions yet. Start one with: soulcode -s <name>%s\n", ansiDim, ansiReset)
+		return
+	}
+	fmt.Printf("%s%-24s  %-8s  %s%s\n", ansiBold, "NAME", "MESSAGES", "LAST SAVED", ansiReset)
+	for _, s := range sessions {
+		active := "  "
+		if s.Key == r.sessionKey {
+			active = ansiGreen + "* " + ansiReset
+		}
+		age := formatAge(s.SavedAt)
+		fmt.Printf("%s%s%-24s  %-8d  %s%s\n", active, ansiDim, s.Name, s.Count, age, ansiReset)
+	}
+}
+
 // agentLoop runs the full agentic cycle: LLM → tools → LLM → ... until the
 // LLM responds with no tool calls or the user interrupts.
 func (r *REPL) agentLoop(ctx context.Context, input string, sigCh <-chan os.Signal) {
@@ -241,12 +266,14 @@ func (r *REPL) agentLoop(ctx context.Context, input string, sigCh <-chan os.Sign
 		}
 
 		for _, call := range calls {
-			fmt.Printf("\n%s[%s]%s\n", ansiCyan, call.Name, ansiReset)
+			if call.Name != "think" {
+				fmt.Printf("\n%s[%s]%s\n", ansiCyan, call.Name, ansiReset)
+			}
 			result, err := r.tools.Execute(ctx, call)
 			if err != nil {
 				result = fmt.Sprintf("error: %v", err)
 				fmt.Printf("%s%s%s\n", ansiRed, result, ansiReset)
-			} else {
+			} else if call.Name != "think" {
 				fmt.Printf("%s%s%s\n", ansiDim, truncate(result, 400), ansiReset)
 			}
 			if result == "" {
@@ -268,7 +295,7 @@ func (r *REPL) streamOneTurn(ctx context.Context, sigCh <-chan os.Signal) (text 
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	ch, err := r.p.Chat(streamCtx, r.sess.Messages(), r.tools.Definitions())
+	ch, err := r.p.Chat(streamCtx, r.sess.MessagesForAPI(600, 4), r.tools.Definitions())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%serror: %v%s\n", ansiRed, err, ansiReset)
 		return "", nil, false
@@ -312,6 +339,20 @@ func historyPath() string {
 	return home + "/.soulcode/history"
 }
 
+func formatAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -324,6 +365,7 @@ Commands:
   /continue        resume interrupted response
   /model           show current model
   /model <name>    switch to a different model (keeps conversation history)
+  /sessions        list all named sessions
   /clear           clear conversation history
   /help            show this message
   /exit            exit soulcode  (also Ctrl+D)
@@ -331,5 +373,9 @@ Commands:
 Keyboard:
   Ctrl+C           interrupt current generation
   Ctrl+D           exit
+
+Sessions:
+  soulcode -s <name>   start or resume a named session
+  soulcode             auto-session keyed to current directory
 
 `

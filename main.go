@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ var (
 )
 
 func main() {
+	// Handle positional commands before flag parsing.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "version", "--version", "-v":
@@ -39,6 +41,13 @@ func main() {
 }
 
 func run() error {
+	fs := flag.NewFlagSet("soulcode", flag.ContinueOnError)
+	sessionName := fs.String("s", "", "named session to start or resume")
+	fs.Usage = func() { fmt.Print(usage) }
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -63,7 +72,7 @@ func run() error {
 		cfg.Model = model
 		return buildProvider(cfg)
 	}
-	return repl.New(p, switchFn).Run(ctx)
+	return repl.New(p, switchFn, *sessionName).Run(ctx)
 }
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
@@ -80,9 +89,13 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 const usage = `soulcode — AI coding assistant for the terminal
 
 Usage:
-  soulcode            start interactive session
-  soulcode version    print version information
-  soulcode help       print this message
+  soulcode               start interactive session (auto-session per directory)
+  soulcode -s <name>     start or resume a named session
+  soulcode version       print version information
+  soulcode help          print this message
+
+Flags:
+  -s <name>    named session (persists across directories)
 
 Configuration:
   ~/.soulcode/config.json   provider, model, and API key
