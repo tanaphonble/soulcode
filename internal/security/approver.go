@@ -82,19 +82,18 @@ func (a *ReadlineApprover) prompt(ctx context.Context, tool, action string, dang
 	const yellow = "\033[33m"
 	const red = "\033[31m"
 	const bold = "\033[1m"
-	const dim = "\033[2m"
 
-	header := yellow + "soulcode wants to run " + tool + reset
+	// One indented prompt line that flows directly under the tool header
+	// already printed by the UI renderer. No separate banner needed.
+	options := "[y/N/always]"
 	if dangerous {
-		header = red + bold + "DANGEROUS COMMAND" + reset + " " + red + "— soulcode wants to run " + tool + reset
+		fmt.Printf("  %s%s⚠ DANGEROUS%s %s%s%s ",
+			red, bold, reset,
+			red, "[y/N]", reset)
+	} else {
+		fmt.Printf("  %sApprove?%s %s%s%s ", yellow, reset, yellow, options, reset)
 	}
-	fmt.Printf("\n%s\n", header)
-	fmt.Printf("%s%s%s\n", dim, action, reset)
-	options := "[y]es / [N]o / [a]lways"
-	if dangerous {
-		options = "[y]es / [N]o   (always-allow disabled for this command)"
-	}
-	fmt.Printf("Approve? %s ", options)
+	_ = action // shown in the renderer's tool header above this prompt
 
 	if a.rl != nil {
 		a.rl.SetPrompt("")

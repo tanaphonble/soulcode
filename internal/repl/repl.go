@@ -17,6 +17,7 @@ import (
 	"github.com/tanaphonble/soulcode/internal/security"
 	"github.com/tanaphonble/soulcode/internal/session"
 	"github.com/tanaphonble/soulcode/internal/tools"
+	"github.com/tanaphonble/soulcode/internal/ui"
 )
 
 // ANSI escape codes — no external dependency needed.
@@ -47,6 +48,7 @@ type REPL struct {
 	yolo       bool
 	allowList  *security.AllowList
 	auditor    *security.Auditor
+	ui         *ui.Renderer
 }
 
 const systemPrompt = `You are soulcode, a world-class terminal-based software engineering assistant.
@@ -99,6 +101,7 @@ func New(p provider.Provider, switchFn SwitchFn, opts Options) *REPL {
 		yolo:       opts.Yolo || security.EnvYolo(),
 		allowList:  security.LoadAllowList(proj.WorkDir),
 		auditor:    security.NewAuditor(),
+		ui:         ui.New(proj.WorkDir),
 	}
 }
 
@@ -295,23 +298,28 @@ func (r *REPL) agentLoop(ctx context.Context, input string, sigCh <-chan os.Sign
 		}
 
 		for _, call := range calls {
+			var tc *ui.ToolCall
 			if call.Name != "think" {
-				fmt.Printf("\n%s[%s]%s\n", ansiCyan, call.Name, ansiReset)
+				tc = r.ui.ToolStart(call.Name, call.Input)
 			}
 			result, err := r.tools.Execute(ctx, call)
+			if tc != nil {
+				tc.Done(result, err)
+			}
 			if err != nil {
-				result = fmt.Sprintf("error: %v", err)
-				fmt.Printf("%s%s%s\n", ansiRed, result, ansiReset)
-			} else if call.Name != "think" {
-				fmt.Printf("%s%s%s\n", ansiDim, truncate(result, 400), ansiReset)
+				// runBash already returns "error: …" via its own format; the LLM
+				// needs the raw error string so it can react.
+				if result == "" {
+					result = fmt.Sprintf("error: %v", err)
+				}
 			}
 			// Scrub well-known credential shapes before the result is sent
 			// back to the LLM. The user is warned in the terminal so they
 			// know a leak was caught locally.
 			redacted, hits := security.Redact(result)
 			if len(hits) > 0 {
-				fmt.Printf("%s[secrets redacted before sending to model: %s]%s\n",
-					ansiYellow, security.SummariseHits(hits), ansiReset)
+				fmt.Printf("  %s%s secrets redacted before sending to model: %s%s\n",
+					ansiYellow, ui.GlyphWarn, security.SummariseHits(hits), ansiReset)
 				result = redacted
 			}
 			r.audit(call, result, err, hits)
@@ -324,7 +332,6 @@ func (r *REPL) agentLoop(ctx context.Context, input string, sigCh <-chan os.Sign
 				ToolCallID: call.ID,
 			})
 		}
-		fmt.Println()
 	}
 }
 
@@ -415,13 +422,6 @@ func formatAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "…"
 }
 
 const helpText = `
