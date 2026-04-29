@@ -70,6 +70,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Windows is intentionally not built: the bash tool is core and
+        # requires a POSIX shell. Windows users should run soulcode under WSL.
         include:
           - goos: linux
             goarch: amd64
@@ -79,8 +81,6 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
-          - goos: windows
-            goarch: amd64
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}

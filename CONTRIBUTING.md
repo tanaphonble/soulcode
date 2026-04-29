@@ -6,7 +6,7 @@ Thank you for your interest. This document covers everything you need to contrib
 
 ## Prerequisites
 
-- Go 1.23+
+- Go 1.25+
 - `git`
 - An LLM API key **or** [Ollama](https://ollama.com) for local testing
 

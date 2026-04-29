@@ -1,0 +1,125 @@
+version: 2
+
+# soulcode release configuration.
+#
+# Notes:
+#  - Windows is intentionally excluded: the bash tool requires a POSIX shell.
+#    Windows users should run soulcode under WSL.
+#  - Binaries are signed with cosign keyless OIDC via Sigstore. Verification:
+#       cosign verify-blob \
+#         --certificate-identity-regexp 'github.com/tanaphonble/soulcode' \
+#         --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#         --signature soulcode_<version>_<os>_<arch>.tar.gz.sig \
+#         --certificate soulcode_<version>_<os>_<arch>.tar.gz.pem \
+#         soulcode_<version>_<os>_<arch>.tar.gz
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: soulcode
+    main: .
+    binary: soulcode
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .CommitDate }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: tarball
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  # Sign the checksums file with cosign keyless. Anyone who verifies a single
+  # signature against this file transitively trusts every artefact in the
+  # release.
+  - id: cosign-checksums
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+  # Also sign each archive directly so users can verify a single binary
+  # without first fetching checksums.txt.
+  - id: cosign-archives
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: archive
+    output: true
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  footer: |
+    ## Verify
+
+    All release artefacts are signed with cosign keyless OIDC. To verify a binary:
+
+    ```sh
+    cosign verify-blob \
+      --certificate-identity-regexp 'github.com/tanaphonble/soulcode' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      --signature soulcode_{{ .Version }}_<os>_<arch>.tar.gz.sig \
+      --certificate soulcode_{{ .Version }}_<os>_<arch>.tar.gz.pem \
+      soulcode_{{ .Version }}_<os>_<arch>.tar.gz
+    ```
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '(?i)^.*?(feat|add|added)(\([^)]+\))?:?'
+      order: 0
+    - title: Changes
+      regexp: '(?i)^.*?(change|changed|update|updated)(\([^)]+\))?:?'
+      order: 1
+    - title: Bug fixes
+      regexp: '(?i)^.*?(fix|fixed|bug)(\([^)]+\))?:?'
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
