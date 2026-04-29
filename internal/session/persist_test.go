@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/session"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/session"
 )
 
 func TestSaveLoad_RoundTrip(t *testing.T) {

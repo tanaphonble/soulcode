@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/provider"
 )
 
 // httpClient is a shared client with conservative timeouts.

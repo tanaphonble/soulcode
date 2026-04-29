@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/security"
-	"soulcode/internal/tools"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/security"
+	"github.com/tanaphonble/soulcode/internal/tools"
 )
 
 // call builds a ToolCall for use in tests.

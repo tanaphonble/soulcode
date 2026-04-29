@@ -8,11 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"soulcode/internal/config"
-	"soulcode/internal/provider"
-	"soulcode/internal/provider/anthropic"
-	"soulcode/internal/provider/openai"
-	"soulcode/internal/repl"
+	"github.com/tanaphonble/soulcode/internal/config"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/provider/anthropic"
+	"github.com/tanaphonble/soulcode/internal/provider/openai"
+	"github.com/tanaphonble/soulcode/internal/repl"
 )
 
 // Injected at build time via -ldflags.

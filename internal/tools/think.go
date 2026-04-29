@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/provider"
 )
 
 func thinkTool() (provider.Tool, executeFn) {

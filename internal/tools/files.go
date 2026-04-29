@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/security"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/security"
 )
 
 const maxFileRead = 40 * 1024 // 40 KB — use offset/limit for larger files

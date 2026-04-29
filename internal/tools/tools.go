@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/security"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/security"
 )
 
 // executeFn is the signature for a tool's implementation. It receives both the

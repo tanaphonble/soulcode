@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/security"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/security"
 )
 
 const maxSearchResults = 200

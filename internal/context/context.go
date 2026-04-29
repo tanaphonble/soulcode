@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"soulcode/internal/repomap"
+	"github.com/tanaphonble/soulcode/internal/repomap"
 )
 
 // Project holds everything soulcode knows about the working environment.

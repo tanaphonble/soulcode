@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/provider/openai"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/provider/openai"
 )
 
 func newTestClient(t *testing.T, baseURL string) *openai.Client {

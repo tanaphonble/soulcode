@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/session"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/session"
 )
 
 func TestNew_EmptySession(t *testing.T) {

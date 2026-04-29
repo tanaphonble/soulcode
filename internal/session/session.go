@@ -1,7 +1,7 @@
 // Package session manages conversation history for a single REPL session.
 package session
 
-import "soulcode/internal/provider"
+import "github.com/tanaphonble/soulcode/internal/provider"
 
 // Session holds the ordered message history for a conversation.
 type Session struct {

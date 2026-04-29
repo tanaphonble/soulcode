@@ -12,11 +12,11 @@ import (
 
 	"github.com/chzyer/readline"
 
-	sctx "soulcode/internal/context"
-	"soulcode/internal/provider"
-	"soulcode/internal/security"
-	"soulcode/internal/session"
-	"soulcode/internal/tools"
+	sctx "github.com/tanaphonble/soulcode/internal/context"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/security"
+	"github.com/tanaphonble/soulcode/internal/session"
+	"github.com/tanaphonble/soulcode/internal/tools"
 )
 
 // ANSI escape codes — no external dependency needed.

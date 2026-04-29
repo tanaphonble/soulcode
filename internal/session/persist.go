@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/provider"
 )
 
 type savedSession struct {

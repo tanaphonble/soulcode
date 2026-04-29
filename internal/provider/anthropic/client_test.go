@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"soulcode/internal/provider"
-	"soulcode/internal/provider/anthropic"
+	"github.com/tanaphonble/soulcode/internal/provider"
+	"github.com/tanaphonble/soulcode/internal/provider/anthropic"
 )
 
 // newTestClient creates a client pointing at a test server URL.

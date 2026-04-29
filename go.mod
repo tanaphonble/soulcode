@@ -1,4 +1,4 @@
-module soulcode
+module github.com/tanaphonble/soulcode
 
 go 1.25.0
 
