@@ -20,51 +20,9 @@ func goEntry(path, rel string) string {
 	}
 
 	var lines []string
-
 	for _, decl := range f.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if d.Name.IsExported() {
-				lines = append(lines, "  "+funcSig(fset, d))
-			}
-
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				switch s := spec.(type) {
-				case *ast.TypeSpec:
-					if !s.Name.IsExported() {
-						continue
-					}
-					switch t := s.Type.(type) {
-					case *ast.InterfaceType:
-						lines = append(lines, fmt.Sprintf("  type %s interface", s.Name.Name))
-						for _, m := range t.Methods.List {
-							if fn, ok := m.Type.(*ast.FuncType); ok && len(m.Names) > 0 {
-								lines = append(lines, fmt.Sprintf("    %s%s", m.Names[0].Name, funcTypeSig(fset, fn)))
-							}
-						}
-					case *ast.StructType:
-						fields := exportedFieldNames(t)
-						if len(fields) > 0 {
-							lines = append(lines, fmt.Sprintf("  type %s struct { %s }", s.Name.Name, strings.Join(fields, ", ")))
-						} else {
-							lines = append(lines, fmt.Sprintf("  type %s struct", s.Name.Name))
-						}
-					default:
-						lines = append(lines, fmt.Sprintf("  type %s", typeSpecSig(fset, s)))
-					}
-
-				case *ast.ValueSpec:
-					for _, name := range s.Names {
-						if name.IsExported() {
-							lines = append(lines, fmt.Sprintf("  const/var %s", name.Name))
-						}
-					}
-				}
-			}
-		}
+		lines = append(lines, declLines(fset, decl)...)
 	}
-
 	if len(lines) == 0 {
 		return ""
 	}
@@ -76,6 +34,68 @@ func goEntry(path, rel string) string {
 		sb.WriteByte('\n')
 	}
 	return sb.String()
+}
+
+// declLines renders one top-level declaration into zero or more repo-map lines.
+func declLines(fset *token.FileSet, decl ast.Decl) []string {
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Name.IsExported() {
+			return []string{"  " + funcSig(fset, d)}
+		}
+	case *ast.GenDecl:
+		var out []string
+		for _, spec := range d.Specs {
+			out = append(out, specLines(fset, spec)...)
+		}
+		return out
+	}
+	return nil
+}
+
+// specLines renders one spec inside a GenDecl (type/const/var).
+func specLines(fset *token.FileSet, spec ast.Spec) []string {
+	switch s := spec.(type) {
+	case *ast.TypeSpec:
+		if !s.Name.IsExported() {
+			return nil
+		}
+		return typeSpecLines(fset, s)
+	case *ast.ValueSpec:
+		return valueSpecLines(s)
+	}
+	return nil
+}
+
+func typeSpecLines(fset *token.FileSet, s *ast.TypeSpec) []string {
+	switch t := s.Type.(type) {
+	case *ast.InterfaceType:
+		out := []string{fmt.Sprintf("  type %s interface", s.Name.Name)}
+		for _, m := range t.Methods.List {
+			if fn, ok := m.Type.(*ast.FuncType); ok && len(m.Names) > 0 {
+				out = append(out, fmt.Sprintf("    %s%s", m.Names[0].Name, funcTypeSig(fset, fn)))
+			}
+		}
+		return out
+	case *ast.StructType:
+		fields := exportedFieldNames(t)
+		if len(fields) > 0 {
+			return []string{fmt.Sprintf("  type %s struct { %s }", s.Name.Name, strings.Join(fields, ", "))}
+		}
+		return []string{fmt.Sprintf("  type %s struct", s.Name.Name)}
+	default:
+		return []string{fmt.Sprintf("  type %s", typeSpecSig(fset, s))}
+	}
+}
+
+func valueSpecLines(s *ast.ValueSpec) []string {
+	var out []string
+	for _, name := range s.Names {
+		if name.IsExported() {
+			out = append(out, fmt.Sprintf("  const/var %s", name.Name))
+		}
+	}
+	return out
 }
 
 // funcSig returns the signature of a function declaration without its body.

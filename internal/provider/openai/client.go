@@ -183,6 +183,25 @@ type partialToolCall struct {
 	args strings.Builder
 }
 
+// streamChunk is one OpenAI-compatible SSE row.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+}
+
 func (c *Client) stream(ctx context.Context, req *http.Request, ch chan<- provider.Event) {
 	defer close(ch)
 
@@ -196,85 +215,87 @@ func (c *Client) stream(ctx context.Context, req *http.Request, ch chan<- provid
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		var body struct {
-			Error struct{ Message string } `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		msg := body.Error.Message
-		if msg == "" {
-			msg = resp.Status
-		}
-		ch <- provider.Event{Err: fmt.Errorf("openai: %s", msg)}
+		ch <- provider.Event{Err: decodeStreamError(resp)}
 		return
 	}
 
-	// tool calls accumulate across multiple chunks
 	pending := map[int]*partialToolCall{}
-
-	type chunk struct {
-		Choices []struct {
-			Delta struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					Index    int    `json:"index"`
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"delta"`
-			FinishReason *string `json:"finish_reason"`
-		} `json:"choices"`
-	}
-
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return
 		}
 		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
-		if !ok || data == "" || data == "[DONE]" {
-			if data == "[DONE]" {
-				flushToolCalls(pending, ch)
-				return
-			}
+		if !ok || data == "" {
 			continue
 		}
-
-		var c chunk
-		if err := json.Unmarshal([]byte(data), &c); err != nil || len(c.Choices) == 0 {
-			continue
-		}
-
-		choice := c.Choices[0]
-
-		if choice.FinishReason != nil {
+		if data == "[DONE]" {
 			flushToolCalls(pending, ch)
 			return
 		}
-
-		if text := choice.Delta.Content; text != "" {
-			ch <- provider.Event{Text: text}
+		var c streamChunk
+		if err := json.Unmarshal([]byte(data), &c); err != nil || len(c.Choices) == 0 {
+			continue
 		}
-
-		for _, tc := range choice.Delta.ToolCalls {
-			p, exists := pending[tc.Index]
-			if !exists {
-				p = &partialToolCall{}
-				pending[tc.Index] = p
-			}
-			if tc.ID != "" {
-				p.id = tc.ID
-			}
-			if tc.Function.Name != "" {
-				p.name = tc.Function.Name
-			}
-			p.args.WriteString(tc.Function.Arguments)
+		if done := applyChoice(c.Choices[0], pending, ch); done {
+			flushToolCalls(pending, ch)
+			return
 		}
 	}
 	flushToolCalls(pending, ch)
+}
+
+// decodeStreamError pulls the human-readable message out of an error response.
+func decodeStreamError(resp *http.Response) error {
+	var body struct {
+		Error struct{ Message string } `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	msg := body.Error.Message
+	if msg == "" {
+		msg = resp.Status
+	}
+	return fmt.Errorf("openai: %s", msg)
+}
+
+// applyChoice processes one delta and returns true when finish_reason indicates
+// the stream is complete.
+func applyChoice(choice struct {
+	Delta struct {
+		Content   string `json:"content"`
+		ToolCalls []struct {
+			Index    int    `json:"index"`
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	} `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+}, pending map[int]*partialToolCall, ch chan<- provider.Event) bool {
+	if choice.FinishReason != nil {
+		return true
+	}
+	if text := choice.Delta.Content; text != "" {
+		ch <- provider.Event{Text: text}
+	}
+	for _, tc := range choice.Delta.ToolCalls {
+		p, exists := pending[tc.Index]
+		if !exists {
+			p = &partialToolCall{}
+			pending[tc.Index] = p
+		}
+		if tc.ID != "" {
+			p.id = tc.ID
+		}
+		if tc.Function.Name != "" {
+			p.name = tc.Function.Name
+		}
+		p.args.WriteString(tc.Function.Arguments)
+	}
+	return false
 }
 
 func flushToolCalls(pending map[int]*partialToolCall, ch chan<- provider.Event) {

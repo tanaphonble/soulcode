@@ -43,58 +43,85 @@ func runGrep(_ context.Context, input json.RawMessage, sec *SecurityContext) (st
 	if args.Path == "" {
 		args.Path = "."
 	}
-
 	re, err := regexp.Compile(args.Pattern)
 	if err != nil {
 		return "", fmt.Errorf("grep: invalid pattern: %w", err)
 	}
-
 	root, err := resolveForRead(args.Path, sec)
 	if err != nil {
 		return "", fmt.Errorf("grep: %w", err)
 	}
 
-	var results []string
-
-	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		if args.Glob != "" {
-			matched, _ := filepath.Match(args.Glob, filepath.Base(p))
-			if !matched {
-				return nil
-			}
-		}
-		// Skip blocked sensitive files inside otherwise-allowed trees.
-		if security.IsSensitive(p) {
-			return nil
-		}
-		data, err := os.ReadFile(p) //nolint:gosec // path comes from filepath.Walk under validated root
-		if err != nil {
-			return nil // skip unreadable files
-		}
-		for i, line := range strings.Split(string(data), "\n") {
-			if re.MatchString(line) {
-				results = append(results, fmt.Sprintf("%s:%d: %s", p, i+1, line))
-				if len(results) >= maxSearchResults {
-					return filepath.SkipAll
-				}
-			}
-		}
-		return nil
-	})
+	results, err := walkGrep(root, args.Glob, re)
 	if err != nil {
 		return "", fmt.Errorf("grep: %w", err)
 	}
+	return formatGrepResults(results), nil
+}
+
+func walkGrep(root, glob string, re *regexp.Regexp) ([]string, error) {
+	var results []string
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !grepShouldScan(p, glob) {
+			return nil
+		}
+		hits, err := grepFile(p, re, maxSearchResults-len(results))
+		if err != nil {
+			return nil // skip unreadable
+		}
+		results = append(results, hits...)
+		if len(results) >= maxSearchResults {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return results, err
+}
+
+// grepShouldScan filters out files based on the user's glob and the security
+// blocklist before any read happens.
+func grepShouldScan(path, glob string) bool {
+	if glob != "" {
+		if matched, _ := filepath.Match(glob, filepath.Base(path)); !matched {
+			return false
+		}
+	}
+	return !security.IsSensitive(path)
+}
+
+// grepFile returns up to budget matches from one file.
+func grepFile(path string, re *regexp.Regexp, budget int) ([]string, error) {
+	if budget <= 0 {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path comes from filepath.Walk under validated root
+	if err != nil {
+		return nil, err
+	}
+	var hits []string
+	for i, line := range strings.Split(string(data), "\n") {
+		if re.MatchString(line) {
+			hits = append(hits, fmt.Sprintf("%s:%d: %s", path, i+1, line))
+			if len(hits) >= budget {
+				break
+			}
+		}
+	}
+	return hits, nil
+}
+
+func formatGrepResults(results []string) string {
 	if len(results) == 0 {
-		return "no matches found", nil
+		return "no matches found"
 	}
 	out := strings.Join(results, "\n")
 	if len(results) >= maxSearchResults {
 		out += fmt.Sprintf("\n... (showing first %d matches)", maxSearchResults)
 	}
-	return out, nil
+	return out
 }
 
 func globTool() (provider.Tool, executeFn) {

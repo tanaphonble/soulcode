@@ -186,6 +186,22 @@ type block struct {
 	inputBuf strings.Builder
 }
 
+// rawStreamEvent is a single SSE row from /v1/messages.
+type rawStreamEvent struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"content_block"`
+	Delta struct {
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
+	} `json:"delta"`
+}
+
 func (c *Client) stream(ctx context.Context, req *http.Request, ch chan<- provider.Event) {
 	defer close(ch)
 
@@ -199,37 +215,11 @@ func (c *Client) stream(ctx context.Context, req *http.Request, ch chan<- provid
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		var body struct {
-			Error struct{ Message string } `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		msg := body.Error.Message
-		if msg == "" {
-			msg = resp.Status
-		}
-		ch <- provider.Event{Err: fmt.Errorf("anthropic: %s", msg)}
+		ch <- provider.Event{Err: decodeStreamError(resp)}
 		return
 	}
 
 	blocks := map[int]*block{}
-
-	type rawEvent struct {
-		Type  string `json:"type"`
-		Index int    `json:"index"`
-		// content_block_start
-		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"content_block"`
-		// content_block_delta
-		Delta struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			PartialJSON string `json:"partial_json"`
-		} `json:"delta"`
-	}
-
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -239,48 +229,67 @@ func (c *Client) stream(ctx context.Context, req *http.Request, ch chan<- provid
 		if !ok || data == "" {
 			continue
 		}
-
-		var ev rawEvent
+		var ev rawStreamEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			continue
 		}
-
-		switch ev.Type {
-		case "content_block_start":
-			b := &block{kind: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
-			blocks[ev.Index] = b
-
-		case "content_block_delta":
-			b := blocks[ev.Index]
-			if b == nil {
-				continue
-			}
-			switch ev.Delta.Type {
-			case "text_delta":
-				if ev.Delta.Text != "" {
-					ch <- provider.Event{Text: ev.Delta.Text}
-				}
-			case "input_json_delta":
-				b.inputBuf.WriteString(ev.Delta.PartialJSON)
-			}
-
-		case "content_block_stop":
-			b := blocks[ev.Index]
-			if b == nil || b.kind != "tool_use" {
-				continue
-			}
-			input := json.RawMessage(b.inputBuf.String())
-			if len(input) == 0 {
-				input = json.RawMessage("{}")
-			}
-			ch <- provider.Event{ToolCall: &provider.ToolCall{
-				ID:    b.id,
-				Name:  b.name,
-				Input: input,
-			}}
-
-		case "message_stop":
+		if done := dispatchStreamEvent(ev, blocks, ch); done {
 			return
 		}
 	}
+}
+
+// decodeStreamError extracts the error message from an Anthropic API error
+// response, falling back to the HTTP status line if the body is unreadable.
+func decodeStreamError(resp *http.Response) error {
+	var body struct {
+		Error struct{ Message string } `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	msg := body.Error.Message
+	if msg == "" {
+		msg = resp.Status
+	}
+	return fmt.Errorf("anthropic: %s", msg)
+}
+
+// dispatchStreamEvent routes one parsed SSE event. Returns true when the
+// caller should stop reading (message_stop received).
+func dispatchStreamEvent(ev rawStreamEvent, blocks map[int]*block, ch chan<- provider.Event) bool {
+	switch ev.Type {
+	case "content_block_start":
+		blocks[ev.Index] = &block{kind: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
+	case "content_block_delta":
+		applyBlockDelta(blocks[ev.Index], ev.Delta.Type, ev.Delta.Text, ev.Delta.PartialJSON, ch)
+	case "content_block_stop":
+		flushToolUseBlock(blocks[ev.Index], ch)
+	case "message_stop":
+		return true
+	}
+	return false
+}
+
+func applyBlockDelta(b *block, kind, text, partialJSON string, ch chan<- provider.Event) {
+	if b == nil {
+		return
+	}
+	switch kind {
+	case "text_delta":
+		if text != "" {
+			ch <- provider.Event{Text: text}
+		}
+	case "input_json_delta":
+		b.inputBuf.WriteString(partialJSON)
+	}
+}
+
+func flushToolUseBlock(b *block, ch chan<- provider.Event) {
+	if b == nil || b.kind != "tool_use" {
+		return
+	}
+	input := json.RawMessage(b.inputBuf.String())
+	if len(input) == 0 {
+		input = json.RawMessage("{}")
+	}
+	ch <- provider.Event{ToolCall: &provider.ToolCall{ID: b.id, Name: b.name, Input: input}}
 }
