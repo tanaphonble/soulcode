@@ -6,11 +6,24 @@ import (
 	"testing"
 
 	"soulcode/internal/provider"
+	"soulcode/internal/security"
+	"soulcode/internal/tools"
 )
 
 // call builds a ToolCall for use in tests.
 func call(name, input string) provider.ToolCall {
 	return provider.ToolCall{ID: "test", Name: name, Input: json.RawMessage(input)}
+}
+
+// newRegistry builds a tools.Registry scoped to workdir, with an auto-approver
+// (allows everything except dangerous patterns) and no auditor. Use this in
+// tests instead of tools.New so the new SecurityContext signature is honoured
+// uniformly.
+func newRegistry(workdir string) *tools.Registry {
+	return tools.New(&tools.SecurityContext{
+		Workdir:  workdir,
+		Approver: security.AutoApprover{},
+	})
 }
 
 func mustWriteFile(t *testing.T, path string, content []byte) {

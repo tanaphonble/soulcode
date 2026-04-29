@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"soulcode/internal/tools"
 )
 
 func TestGrep_FindsMatches(t *testing.T) {
@@ -16,7 +14,7 @@ func TestGrep_FindsMatches(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, "a.go"), []byte("func main() {}\n"))
 	mustWriteFile(t, filepath.Join(dir, "b.go"), []byte("func helper() {}\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("grep", fmt.Sprintf(`{"pattern":"func","path":%q}`, dir)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -31,7 +29,7 @@ func TestGrep_NoMatches(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "a.go"), []byte("package main\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("grep", fmt.Sprintf(`{"pattern":"NOTFOUND","path":%q}`, dir)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -43,7 +41,7 @@ func TestGrep_NoMatches(t *testing.T) {
 
 func TestGrep_InvalidRegex(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	_, err := reg.Execute(context.Background(), call("grep", `{"pattern":"[invalid"}`))
 	if err == nil {
@@ -57,7 +55,7 @@ func TestGrep_GlobFilter(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, "main.go"), []byte("package main\n"))
 	mustWriteFile(t, filepath.Join(dir, "main.ts"), []byte("const x = 1\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("grep", fmt.Sprintf(
 		`{"pattern":"main","path":%q,"glob":"*.go"}`, dir,
 	)))
@@ -76,7 +74,7 @@ func TestGlob_FindsFiles(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, "main_test.go"), []byte(""))
 	mustWriteFile(t, filepath.Join(dir, "README.md"), []byte(""))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("glob", fmt.Sprintf(`{"pattern":"*.go","path":%q}`, dir)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -94,7 +92,7 @@ func TestGlob_NoMatches(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "main.go"), []byte(""))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("glob", fmt.Sprintf(`{"pattern":"*.ts","path":%q}`, dir)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

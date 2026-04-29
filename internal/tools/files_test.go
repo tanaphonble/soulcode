@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"soulcode/internal/tools"
 )
 
 func TestReadFile_Success(t *testing.T) {
@@ -17,12 +15,11 @@ func TestReadFile_Success(t *testing.T) {
 	path := filepath.Join(dir, "hello.txt")
 	mustWriteFile(t, path, []byte("hello world"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("read_file", fmt.Sprintf(`{"path":%q}`, path)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Output includes line numbers: "1\thello world\n"
 	if !strings.Contains(out, "hello world") {
 		t.Errorf("expected output to contain 'hello world', got %q", out)
 	}
@@ -37,7 +34,7 @@ func TestReadFile_OffsetLimit(t *testing.T) {
 	path := filepath.Join(dir, "lines.txt")
 	mustWriteFile(t, path, []byte("line1\nline2\nline3\nline4\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("read_file", fmt.Sprintf(`{"path":%q,"offset":2,"limit":2}`, path)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -58,11 +55,38 @@ func TestReadFile_OffsetLimit(t *testing.T) {
 
 func TestReadFile_NotFound(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	dir := t.TempDir()
+	reg := newRegistry(dir)
 
-	_, err := reg.Execute(context.Background(), call("read_file", `{"path":"/nonexistent/file.txt"}`))
+	_, err := reg.Execute(context.Background(), call("read_file", fmt.Sprintf(`{"path":%q}`, filepath.Join(dir, "nope.txt"))))
 	if err == nil {
 		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestReadFile_RejectsOutsideWorkdir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	mustWriteFile(t, outside, []byte("classified"))
+
+	reg := newRegistry(dir)
+	_, err := reg.Execute(context.Background(), call("read_file", fmt.Sprintf(`{"path":%q}`, outside)))
+	if err == nil {
+		t.Error("expected error reading path outside workdir")
+	}
+}
+
+func TestReadFile_RejectsSensitiveBasename(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "id_rsa")
+	mustWriteFile(t, path, []byte("fake-key"))
+
+	reg := newRegistry(dir)
+	_, err := reg.Execute(context.Background(), call("read_file", fmt.Sprintf(`{"path":%q}`, path)))
+	if err == nil {
+		t.Error("expected error reading id_rsa even inside workdir")
 	}
 }
 
@@ -71,12 +95,15 @@ func TestWriteFile_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "new.txt")
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	_, err := reg.Execute(context.Background(), call("write_file", fmt.Sprintf(`{"path":%q,"content":"content"}`, path)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	// File path returned by the tool may have symlinks resolved on macOS;
+	// look it up via the canonical workdir.
+	realDir, _ := filepath.EvalSymlinks(dir)
+	data, err := os.ReadFile(filepath.Join(realDir, "sub", "new.txt")) //nolint:gosec // test reads its own temp file
 	if err != nil {
 		t.Fatalf("file not created: %v", err)
 	}
@@ -91,7 +118,7 @@ func TestWriteFile_Overwrite(t *testing.T) {
 	path := filepath.Join(dir, "f.txt")
 	mustWriteFile(t, path, []byte("old"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	if _, err := reg.Execute(context.Background(), call("write_file", fmt.Sprintf(`{"path":%q,"content":"new"}`, path))); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,13 +132,25 @@ func TestWriteFile_Overwrite(t *testing.T) {
 	}
 }
 
+func TestWriteFile_RejectsOutsideWorkdir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "evil.txt")
+
+	reg := newRegistry(dir)
+	_, err := reg.Execute(context.Background(), call("write_file", fmt.Sprintf(`{"path":%q,"content":"x"}`, outside)))
+	if err == nil {
+		t.Error("expected error writing outside workdir")
+	}
+}
+
 func TestEditFile_Success(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "code.go")
 	mustWriteFile(t, path, []byte("func hello() {}\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	_, err := reg.Execute(context.Background(), call("edit_file", fmt.Sprintf(
 		`{"path":%q,"old_string":"func hello()","new_string":"func goodbye()"}`, path,
 	)))
@@ -133,7 +172,7 @@ func TestEditFile_NotFound(t *testing.T) {
 	path := filepath.Join(dir, "f.go")
 	mustWriteFile(t, path, []byte("package main\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	_, err := reg.Execute(context.Background(), call("edit_file", fmt.Sprintf(
 		`{"path":%q,"old_string":"missing","new_string":"x"}`, path,
 	)))
@@ -148,7 +187,7 @@ func TestEditFile_Ambiguous(t *testing.T) {
 	path := filepath.Join(dir, "f.go")
 	mustWriteFile(t, path, []byte("foo\nfoo\n"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	_, err := reg.Execute(context.Background(), call("edit_file", fmt.Sprintf(
 		`{"path":%q,"old_string":"foo","new_string":"bar"}`, path,
 	)))
@@ -163,7 +202,7 @@ func TestLs_ListsEntries(t *testing.T) {
 	mustWriteFile(t, filepath.Join(dir, "a.txt"), []byte("x"))
 	mustMkdir(t, filepath.Join(dir, "subdir"))
 
-	reg := tools.New()
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("ls", fmt.Sprintf(`{"path":%q}`, dir)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -176,14 +215,17 @@ func TestLs_ListsEntries(t *testing.T) {
 	}
 }
 
-func TestLs_DefaultsToCurrentDir(t *testing.T) {
+func TestLs_DefaultsToWorkdir(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "marker.txt"), []byte("x"))
+
+	reg := newRegistry(dir)
 	out, err := reg.Execute(context.Background(), call("ls", `{}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out == "" {
-		t.Error("expected non-empty output for current directory")
+	if !strings.Contains(out, "marker.txt") {
+		t.Errorf("expected workdir contents, got %q", out)
 	}
 }

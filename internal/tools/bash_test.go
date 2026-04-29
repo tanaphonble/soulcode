@@ -5,13 +5,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"soulcode/internal/tools"
 )
 
 func TestBash_Success(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	out, err := reg.Execute(context.Background(), call("bash", `{"command":"echo hello"}`))
 	if err != nil {
@@ -24,7 +22,7 @@ func TestBash_Success(t *testing.T) {
 
 func TestBash_NonZeroExit(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	out, err := reg.Execute(context.Background(), call("bash", `{"command":"exit 1"}`))
 	if err != nil {
@@ -37,7 +35,7 @@ func TestBash_NonZeroExit(t *testing.T) {
 
 func TestBash_StderrCaptured(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	out, err := reg.Execute(context.Background(), call("bash", `{"command":"echo err >&2"}`))
 	if err != nil {
@@ -50,7 +48,7 @@ func TestBash_StderrCaptured(t *testing.T) {
 
 func TestBash_Timeout(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -63,7 +61,7 @@ func TestBash_Timeout(t *testing.T) {
 
 func TestBash_EmptyCommand(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	_, err := reg.Execute(context.Background(), call("bash", `{"command":""}`))
 	if err == nil {
@@ -73,7 +71,7 @@ func TestBash_EmptyCommand(t *testing.T) {
 
 func TestBash_UnknownTool(t *testing.T) {
 	t.Parallel()
-	reg := tools.New()
+	reg := newRegistry(t.TempDir())
 
 	_, err := reg.Execute(context.Background(), call("nonexistent", `{}`))
 	if err == nil {

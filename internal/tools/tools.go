@@ -7,10 +7,13 @@ import (
 	"fmt"
 
 	"soulcode/internal/provider"
+	"soulcode/internal/security"
 )
 
-// executeFn is the signature for a tool's implementation.
-type executeFn func(ctx context.Context, input json.RawMessage) (string, error)
+// executeFn is the signature for a tool's implementation. It receives both the
+// JSON input from the LLM and the runtime security context that scopes the
+// tool's access to the filesystem and shell.
+type executeFn func(ctx context.Context, input json.RawMessage, sec *SecurityContext) (string, error)
 
 // entry holds a tool definition alongside its implementation.
 type entry struct {
@@ -18,14 +21,29 @@ type entry struct {
 	run executeFn
 }
 
+// SecurityContext carries the workdir boundary, allow-list, approver, and
+// auditor that all tool invocations must respect. A nil approver disables
+// confirmation prompts (acceptable in tests; main.go always supplies one).
+type SecurityContext struct {
+	Workdir   string
+	Approver  security.Approver
+	AllowList *security.AllowList
+	Auditor   *security.Auditor
+}
+
 // Registry holds all available tools and dispatches LLM tool calls.
 type Registry struct {
 	tools map[string]*entry
+	sec   *SecurityContext
 }
 
-// New returns a Registry pre-loaded with all built-in tools.
-func New() *Registry {
-	r := &Registry{tools: map[string]*entry{}}
+// New returns a Registry pre-loaded with all built-in tools and bound to the
+// supplied security context.
+func New(sec *SecurityContext) *Registry {
+	if sec == nil {
+		sec = &SecurityContext{}
+	}
+	r := &Registry{tools: map[string]*entry{}, sec: sec}
 	r.register(thinkTool())
 	r.register(bashTool())
 	r.register(readFileTool())
@@ -56,7 +74,7 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) (string,
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
-	return e.run(ctx, call.Input)
+	return e.run(ctx, call.Input, r.sec)
 }
 
 // schema builds a JSON Schema literal.

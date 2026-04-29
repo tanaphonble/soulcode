@@ -43,6 +43,7 @@ func main() {
 func run() error {
 	fs := flag.NewFlagSet("soulcode", flag.ContinueOnError)
 	sessionName := fs.String("s", "", "named session to start or resume")
+	yolo := fs.Bool("yolo", false, "auto-approve bash commands except dangerous patterns (CI / sandboxed use)")
 	fs.Usage = func() { fmt.Print(usage) }
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -58,6 +59,7 @@ func run() error {
 			return err
 		}
 	}
+	applyEnvOverrides(cfg)
 
 	p, err := buildProvider(cfg)
 	if err != nil {
@@ -72,7 +74,30 @@ func run() error {
 		cfg.Model = model
 		return buildProvider(cfg)
 	}
-	return repl.New(p, switchFn, *sessionName).Run(ctx)
+	return repl.New(p, switchFn, repl.Options{
+		SessionName: *sessionName,
+		Yolo:        *yolo,
+	}).Run(ctx)
+}
+
+// applyEnvOverrides lets users keep credentials out of ~/.soulcode/config.json
+// by setting one of the well-known environment variables. The order of
+// precedence is provider-specific then generic, so a misconfigured generic
+// var doesn't override a correct one.
+func applyEnvOverrides(cfg *config.Config) {
+	if v := os.Getenv("SOULCODE_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+	switch cfg.Provider {
+	case "anthropic":
+		if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+			cfg.APIKey = v
+		}
+	case "openai":
+		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+			cfg.APIKey = v
+		}
+	}
 }
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
@@ -91,17 +116,36 @@ const usage = `soulcode — AI coding assistant for the terminal
 Usage:
   soulcode               start interactive session (auto-session per directory)
   soulcode -s <name>     start or resume a named session
+  soulcode --yolo        auto-approve bash (still blocks dangerous patterns)
   soulcode version       print version information
   soulcode help          print this message
 
 Flags:
   -s <name>    named session (persists across directories)
+  --yolo       skip bash approval prompts (CI / sandboxed use only)
+
+Environment:
+  ANTHROPIC_API_KEY / OPENAI_API_KEY / SOULCODE_API_KEY
+       override the API key from config.json (preferred for ephemeral hosts)
+  SOULCODE_YOLO=1
+       same as --yolo
 
 Configuration:
-  ~/.soulcode/config.json   provider, model, and API key
+  ~/.soulcode/config.json   provider, model, and (optional) API key (mode 0600)
+  ~/.soulcode/audit.log     append-only log of every tool call (mode 0600)
+  .soulcode/allow.txt       per-project bash command prefixes that auto-approve
 
 Project context:
   soulcode.md               project instructions (auto-discovered from git root)
+
+Security:
+  - File tools are scoped to the working directory; symlinks that escape are
+    rejected.
+  - Sensitive files (~/.ssh, ~/.aws, id_rsa, .env, *.pem, etc.) are blocked.
+  - bash commands prompt for approval unless --yolo / SOULCODE_YOLO is set.
+  - Dangerous patterns (rm -rf /, curl|sh, ...) always re-prompt.
+  - Tool output is scanned for secret-shaped strings and redacted before being
+    sent to the LLM provider.
 
 More: https://github.com/tanaphonble/soulcode
 `

@@ -28,7 +28,7 @@ func thinkTool() (provider.Tool, executeFn) {
 	}, runThink
 }
 
-func runThink(_ context.Context, input json.RawMessage) (string, error) {
+func runThink(_ context.Context, input json.RawMessage, _ *SecurityContext) (string, error) {
 	var args struct {
 		Thought string `json:"thought"`
 	}

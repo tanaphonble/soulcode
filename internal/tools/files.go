@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"soulcode/internal/provider"
+	"soulcode/internal/security"
 )
 
 const maxFileRead = 40 * 1024 // 40 KB — use offset/limit for larger files
@@ -32,7 +33,7 @@ func readFileTool() (provider.Tool, executeFn) {
 	}, runReadFile
 }
 
-func runReadFile(_ context.Context, input json.RawMessage) (string, error) {
+func runReadFile(_ context.Context, input json.RawMessage, sec *SecurityContext) (string, error) {
 	var args struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -41,7 +42,11 @@ func runReadFile(_ context.Context, input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &args); err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	data, err := os.ReadFile(args.Path)
+	resolved, err := resolveForRead(args.Path, sec)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	data, err := os.ReadFile(resolved) //nolint:gosec // path validated by security.ResolveRead
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
@@ -95,7 +100,7 @@ func writeFileTool() (provider.Tool, executeFn) {
 	}, runWriteFile
 }
 
-func runWriteFile(_ context.Context, input json.RawMessage) (string, error) {
+func runWriteFile(_ context.Context, input json.RawMessage, sec *SecurityContext) (string, error) {
 	var args struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -103,14 +108,18 @@ func runWriteFile(_ context.Context, input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &args); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(args.Path), 0755); err != nil { //nolint:gosec // 0755 is correct for project directories
+	resolved, err := resolveForWrite(args.Path, sec)
+	if err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
-	if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil { //nolint:gosec // 0644 is correct for user project files
+	if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil { //nolint:gosec // 0755 is correct for project directories
 		return "", fmt.Errorf("write_file: %w", err)
 	}
-	gofmt(args.Path)
-	return fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), nil
+	if err := os.WriteFile(resolved, []byte(args.Content), 0644); err != nil { //nolint:gosec // 0644 is correct for user project files
+		return "", fmt.Errorf("write_file: %w", err)
+	}
+	gofmt(resolved)
+	return fmt.Sprintf("wrote %d bytes to %s", len(args.Content), resolved), nil
 }
 
 func editFileTool() (provider.Tool, executeFn) {
@@ -129,7 +138,7 @@ func editFileTool() (provider.Tool, executeFn) {
 	}, runEditFile
 }
 
-func runEditFile(_ context.Context, input json.RawMessage) (string, error) {
+func runEditFile(_ context.Context, input json.RawMessage, sec *SecurityContext) (string, error) {
 	var args struct {
 		Path      string `json:"path"`
 		OldString string `json:"old_string"`
@@ -138,7 +147,11 @@ func runEditFile(_ context.Context, input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &args); err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
-	data, err := os.ReadFile(args.Path)
+	resolved, err := resolveForRead(args.Path, sec)
+	if err != nil {
+		return "", fmt.Errorf("edit_file: %w", err)
+	}
+	data, err := os.ReadFile(resolved) //nolint:gosec // path validated
 	if err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
@@ -146,18 +159,18 @@ func runEditFile(_ context.Context, input json.RawMessage) (string, error) {
 	count := strings.Count(content, args.OldString)
 	switch count {
 	case 0:
-		return "", fmt.Errorf("edit_file: old_string not found in %s", args.Path)
+		return "", fmt.Errorf("edit_file: old_string not found in %s", resolved)
 	case 1:
 		// good
 	default:
-		return "", fmt.Errorf("edit_file: old_string appears %d times in %s — make it more specific", count, args.Path)
+		return "", fmt.Errorf("edit_file: old_string appears %d times in %s — make it more specific", count, resolved)
 	}
 	updated := strings.Replace(content, args.OldString, args.NewString, 1)
-	if err := os.WriteFile(args.Path, []byte(updated), 0644); err != nil { //nolint:gosec // 0644 correct for project files
+	if err := os.WriteFile(resolved, []byte(updated), 0644); err != nil { //nolint:gosec // path validated
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
-	gofmt(args.Path)
-	return fmt.Sprintf("edited %s\n%s", args.Path, inlineDiff(args.OldString, args.NewString)), nil
+	gofmt(resolved)
+	return fmt.Sprintf("edited %s\n%s", resolved, inlineDiff(args.OldString, args.NewString)), nil
 }
 
 // inlineDiff returns a compact before/after diff for display in tool results.
@@ -172,6 +185,25 @@ func inlineDiff(oldStr, newStr string) string {
 		fmt.Fprintf(&sb, "+ %s\n", l)
 	}
 	return sb.String()
+}
+
+// resolveForRead applies the workdir boundary if a security context with a
+// workdir is supplied. When no workdir is configured (older tests, embedding
+// scenarios), the input path is returned unchanged.
+func resolveForRead(path string, sec *SecurityContext) (string, error) {
+	if sec == nil || sec.Workdir == "" {
+		return path, nil
+	}
+	return security.ResolveRead(path, sec.Workdir)
+}
+
+// resolveForWrite mirrors resolveForRead for write-side operations (the file
+// itself need not exist yet).
+func resolveForWrite(path string, sec *SecurityContext) (string, error) {
+	if sec == nil || sec.Workdir == "" {
+		return path, nil
+	}
+	return security.ResolveWrite(path, sec.Workdir)
 }
 
 // gofmt runs gofmt -w on .go files silently — best effort, errors ignored.
@@ -196,7 +228,7 @@ func lsTool() (provider.Tool, executeFn) {
 	}, runLs
 }
 
-func runLs(_ context.Context, input json.RawMessage) (string, error) {
+func runLs(_ context.Context, input json.RawMessage, sec *SecurityContext) (string, error) {
 	var args struct {
 		Path string `json:"path"`
 	}
@@ -206,7 +238,11 @@ func runLs(_ context.Context, input json.RawMessage) (string, error) {
 	if args.Path == "" {
 		args.Path = "."
 	}
-	entries, err := os.ReadDir(args.Path)
+	resolved, err := resolveForRead(args.Path, sec)
+	if err != nil {
+		return "", fmt.Errorf("ls: %w", err)
+	}
+	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		return "", fmt.Errorf("ls: %w", err)
 	}

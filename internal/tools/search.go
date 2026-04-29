@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"soulcode/internal/provider"
+	"soulcode/internal/security"
 )
 
 const maxSearchResults = 200
@@ -30,7 +31,7 @@ func grepTool() (provider.Tool, executeFn) {
 	}, runGrep
 }
 
-func runGrep(_ context.Context, input json.RawMessage) (string, error) {
+func runGrep(_ context.Context, input json.RawMessage, sec *SecurityContext) (string, error) {
 	var args struct {
 		Pattern string `json:"pattern"`
 		Path    string `json:"path"`
@@ -48,9 +49,14 @@ func runGrep(_ context.Context, input json.RawMessage) (string, error) {
 		return "", fmt.Errorf("grep: invalid pattern: %w", err)
 	}
 
+	root, err := resolveForRead(args.Path, sec)
+	if err != nil {
+		return "", fmt.Errorf("grep: %w", err)
+	}
+
 	var results []string
 
-	err = filepath.WalkDir(args.Path, func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -60,7 +66,11 @@ func runGrep(_ context.Context, input json.RawMessage) (string, error) {
 				return nil
 			}
 		}
-		data, err := os.ReadFile(p) //nolint:gosec // path comes from filepath.Walk, not user input
+		// Skip blocked sensitive files inside otherwise-allowed trees.
+		if security.IsSensitive(p) {
+			return nil
+		}
+		data, err := os.ReadFile(p) //nolint:gosec // path comes from filepath.Walk under validated root
 		if err != nil {
 			return nil // skip unreadable files
 		}
@@ -102,7 +112,7 @@ func globTool() (provider.Tool, executeFn) {
 	}, runGlob
 }
 
-func runGlob(_ context.Context, input json.RawMessage) (string, error) {
+func runGlob(_ context.Context, input json.RawMessage, sec *SecurityContext) (string, error) {
 	var args struct {
 		Pattern string `json:"pattern"`
 		Path    string `json:"path"`
@@ -114,12 +124,20 @@ func runGlob(_ context.Context, input json.RawMessage) (string, error) {
 		args.Path = "."
 	}
 
+	root, err := resolveForRead(args.Path, sec)
+	if err != nil {
+		return "", fmt.Errorf("glob: %w", err)
+	}
+
 	var matches []string
-	err := filepath.WalkDir(args.Path, func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		rel, _ := filepath.Rel(args.Path, p)
+		if security.IsSensitive(p) {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
 		matched, _ := filepath.Match(args.Pattern, rel)
 		if !matched {
 			// also try matching just the filename

@@ -14,6 +14,7 @@ import (
 
 	sctx "soulcode/internal/context"
 	"soulcode/internal/provider"
+	"soulcode/internal/security"
 	"soulcode/internal/session"
 	"soulcode/internal/tools"
 )
@@ -39,10 +40,13 @@ type REPL struct {
 	p          provider.Provider
 	switchFn   SwitchFn
 	sess       *session.Session
-	tools      *tools.Registry
+	tools      *tools.Registry // built in Run() once readline is wired
 	workDir    string
 	sessionKey string // either "auto-<hash>" or a user-supplied name
 	restored   bool
+	yolo       bool
+	allowList  *security.AllowList
+	auditor    *security.Auditor
 }
 
 const systemPrompt = `You are soulcode, a world-class terminal-based software engineering assistant.
@@ -62,17 +66,26 @@ const systemPrompt = `You are soulcode, a world-class terminal-based software en
 No narration. Do the work. End with one short summary of what changed and how to run it.
 Mid-task ambiguity: decide and note it in one sentence.`
 
+// Options configures behaviour of a REPL beyond the required provider/session
+// wiring. Zero values are safe defaults.
+type Options struct {
+	// SessionName, when non-empty, overrides the default per-directory auto
+	// session and uses a named session shared across directories.
+	SessionName string
+	// Yolo skips the per-command bash approval prompt. Dangerous patterns
+	// (rm -rf /, curl|sh, etc.) still require confirmation.
+	Yolo bool
+}
+
 // New creates a REPL backed by the given provider.
 // switchFn is called when the user runs /model <name>.
-// sessionName is optional: if non-empty the session is stored/resumed by name
-// instead of being keyed to the working directory.
-func New(p provider.Provider, switchFn SwitchFn, sessionName string) *REPL {
+func New(p provider.Provider, switchFn SwitchFn, opts Options) *REPL {
 	proj := sctx.Gather()
 	sess := session.New(proj.SystemPrompt(systemPrompt))
 
 	key := session.AutoKey(proj.WorkDir)
-	if sessionName != "" {
-		key = sessionName
+	if opts.SessionName != "" {
+		key = opts.SessionName
 	}
 	restored, _ := sess.Load(key)
 
@@ -80,10 +93,12 @@ func New(p provider.Provider, switchFn SwitchFn, sessionName string) *REPL {
 		p:          p,
 		switchFn:   switchFn,
 		sess:       sess,
-		tools:      tools.New(),
 		workDir:    proj.WorkDir,
 		sessionKey: key,
 		restored:   restored,
+		yolo:       opts.Yolo || security.EnvYolo(),
+		allowList:  security.LoadAllowList(proj.WorkDir),
+		auditor:    security.NewAuditor(),
 	}
 }
 
@@ -107,6 +122,9 @@ func (r *REPL) Run(ctx context.Context) error {
 	fmt.Printf("%ssoulcode%s  %s%s%s\n", ansiBold, ansiReset, ansiDim, r.p.ID(), ansiReset)
 	fmt.Printf("%sCtrl+C%s interrupts · %sCtrl+D%s exits · %s/help%s for commands\n",
 		ansiBold, ansiReset, ansiBold, ansiReset, ansiBold, ansiReset)
+	if r.yolo {
+		fmt.Printf("%s[yolo mode: bash auto-approves except dangerous commands]%s\n", ansiYellow, ansiReset)
+	}
 	if r.restored {
 		label := r.sessionKey
 		fmt.Printf("%sSession %q restored (%d messages) — /clear to start fresh%s\n",
@@ -129,6 +147,17 @@ func (r *REPL) Run(ctx context.Context) error {
 			lineCh <- line
 		}
 	}()
+
+	// Wire the security context now that readline is alive. The approver
+	// reuses lineCh so it never competes with the main input goroutine for
+	// stdin.
+	approver := security.NewReadlineApprover(rl, lineCh, promptStr, r.yolo)
+	r.tools = tools.New(&tools.SecurityContext{
+		Workdir:   r.workDir,
+		Approver:  approver,
+		AllowList: r.allowList,
+		Auditor:   r.auditor,
+	})
 
 	for {
 		select {
@@ -276,6 +305,16 @@ func (r *REPL) agentLoop(ctx context.Context, input string, sigCh <-chan os.Sign
 			} else if call.Name != "think" {
 				fmt.Printf("%s%s%s\n", ansiDim, truncate(result, 400), ansiReset)
 			}
+			// Scrub well-known credential shapes before the result is sent
+			// back to the LLM. The user is warned in the terminal so they
+			// know a leak was caught locally.
+			redacted, hits := security.Redact(result)
+			if len(hits) > 0 {
+				fmt.Printf("%s[secrets redacted before sending to model: %s]%s\n",
+					ansiYellow, security.SummariseHits(hits), ansiReset)
+				result = redacted
+			}
+			r.audit(call, result, err, hits)
 			if result == "" {
 				result = "(no output)"
 			}
@@ -334,9 +373,34 @@ func (r *REPL) streamOneTurn(ctx context.Context, sigCh <-chan os.Signal) (text 
 	}
 }
 
+// audit appends a row to ~/.soulcode/audit.log for every tool call other
+// than "bash" (whose audit row carries an approval label written from the
+// bash tool itself) and "think" (whose effects are model-side only).
+func (r *REPL) audit(call provider.ToolCall, result string, err error, hits []string) {
+	if r.auditor == nil || call.Name == "bash" || call.Name == "think" {
+		return
+	}
+	entry := security.AuditEntry{
+		Tool:       call.Name,
+		Args:       security.FormatArgs(call.Input),
+		OK:         err == nil,
+		ResultHash: security.HashResult(result),
+		SecretHits: hits,
+	}
+	if err != nil {
+		entry.Err = err.Error()
+	}
+	r.auditor.Log(entry)
+}
+
 func historyPath() string {
 	home, _ := os.UserHomeDir()
-	return home + "/.soulcode/history"
+	path := home + "/.soulcode/history"
+	// Tighten permissions: history can contain prompts that include secrets.
+	// Best effort — readline creates the file if missing, so chmod after the
+	// first session opens it.
+	_ = os.Chmod(path, 0600)
+	return path
 }
 
 func formatAge(t time.Time) string {
